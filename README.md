@@ -9,9 +9,11 @@ This project helps you automatically add links to your Obsidian vault by creatin
 ## Features
 
 - **Knowledge Graph Creation**: Uses Neo4j GraphRAG to create a knowledge graph from your Obsidian vault
+- **Batch Processing**: Processes files in configurable batches for better performance and memory usage
 - **Entity Recognition**: Identifies entities like Person, Book, Topic, Organisation, Article, and Paper
 - **Relationship Mapping**: Discovers relationships between entities and notes
 - **Automatic Linking**: Suggests and adds `[[links]]` to connect related notes
+- **Configurable Parameters**: Adjustable batch size for optimal performance
 
 ## Setup
 
@@ -41,6 +43,11 @@ This project helps you automatically add links to your Obsidian vault by creatin
 3. Run the knowledge graph creation:
    ```bash
    uv run obsidian-autolink
+   ```
+
+   Or with custom batch size:
+   ```bash
+   uv run obsidian-autolink --batch-size 20
    ```
 
 ## Usage

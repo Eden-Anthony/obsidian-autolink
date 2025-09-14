@@ -1,6 +1,7 @@
 """Main script for Obsidian AutoLink."""
 
 import os
+import argparse
 from pathlib import Path
 
 from .config import ModelSettings
@@ -9,6 +10,12 @@ from .knowledge_graph import ObsidianKnowledgeGraph
 
 def main():
     """Main function to create knowledge graph from Obsidian vault."""
+    parser = argparse.ArgumentParser(description="Create knowledge graph from Obsidian vault")
+    parser.add_argument("--batch-size", type=int, default=20, 
+                       help="Number of files per batch (default: 20)")
+    
+    args = parser.parse_args()
+    
     try:
         # Load configuration
         print("Loading configuration...")
@@ -23,6 +30,8 @@ def main():
         print(f"Vault path: {vault_path}")
         print(f"Neo4j URI: {settings.neo4j_uri}")
         print(f"OpenAI Model: {settings.openai_model}")
+        print(f"OpenAI Embedding Model: {settings.openai_embedding_model}")
+        print(f"Batch Size: {args.batch_size}")
         
         # Create knowledge graph
         kg = ObsidianKnowledgeGraph(settings)
@@ -36,8 +45,8 @@ def main():
             print("Setting up pipeline...")
             kg.setup_pipeline()
             
-            # Create knowledge graph
-            kg.create_knowledge_graph()
+            # Create knowledge graph with batch processing
+            kg.create_knowledge_graph(batch_size=args.batch_size)
             
             # Get and display statistics
             print("\nKnowledge Graph Statistics:")

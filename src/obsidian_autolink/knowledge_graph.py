@@ -1,10 +1,12 @@
 """Knowledge graph creation module for Obsidian AutoLink."""
 
 import os
+import asyncio
 from pathlib import Path
 from typing import List, Dict, Any
 from itertools import batched
-
+from rich.progress import Progress
+from rich.console import Console
 from neo4j_graphrag.experimental.pipeline.kg_builder import SimpleKGPipeline
 from neo4j import GraphDatabase
 from neo4j_graphrag.llm import OpenAILLM
@@ -19,8 +21,9 @@ class ObsidianKnowledgeGraph:
     def __init__(self, settings: ModelSettings):
         """Initialize the knowledge graph with configuration settings."""
         self.settings = settings
-        self.driver = None
-        self.pipeline = None
+        self.driver: GraphDatabase.driver | None = None
+        self.pipeline: SimpleKGPipeline | None = None
+        self.console = Console()
 
     def connect(self) -> None:
         """Establish connection to Neo4j database."""
@@ -58,6 +61,7 @@ class ObsidianKnowledgeGraph:
             driver=self.driver,
             llm=llm,
             embedder=embedder,
+            from_pdf=False,  # We're processing text, not PDFs
         )
 
     def read_vault_files(self) -> List[Dict[str, Any]]:
@@ -90,7 +94,8 @@ class ObsidianKnowledgeGraph:
                 })
 
             except Exception as e:
-                print(f"Warning: Could not read file {file_path}: {e}")
+                self.console.print(
+                    f"Warning: Could not read file {file_path}: {e}")
                 continue
 
         return markdown_files
@@ -101,51 +106,64 @@ class ObsidianKnowledgeGraph:
             raise RuntimeError(
                 "Pipeline not set up. Call setup_pipeline() first.")
 
-        print("Reading vault files...")
+        self.console.print("Reading vault files...")
         vault_files = self.read_vault_files()
-        print(f"Found {len(vault_files)} markdown files")
+        self.console.print(f"Found {len(vault_files)} markdown files")
 
         if not vault_files:
-            print("No markdown files found in the vault.")
+            self.console.print("No markdown files found in the vault.")
             return
 
-        print(f"Creating knowledge graph with batch size {batch_size}...")
+        self.console.print(
+            f"Creating knowledge graph with batch size {batch_size}...")
         try:
-            # Process files in batches
-            self._process_files_in_batches(vault_files, batch_size)
-            print("Knowledge graph creation completed!")
+            # Process files in batches using asyncio
+            asyncio.run(self._process_files_in_batches_async(
+                vault_files, batch_size))
+            self.console.print("Knowledge graph creation completed!")
 
         except Exception as e:
-            print(f"Error creating knowledge graph: {e}")
+            self.console.print(f"Error creating knowledge graph: {e}")
             raise
 
-    def _process_files_in_batches(self, vault_files: List[Dict[str, Any]], batch_size: int) -> None:
-        """Process files in batches to improve performance and memory usage."""
+    async def _process_files_in_batches_async(self, vault_files: List[Dict[str, Any]], batch_size: int) -> None:
+        """Process files in batches using async pipeline with concurrent processing."""
         # Create batches of files using itertools.batched
         file_batches = list(batched(vault_files, batch_size))
 
-        print(f"Processing {len(file_batches)} batches...")
+        self.console.print(f"Processing {len(file_batches)} batches...")
+        with Progress() as progress:
+            task_id = progress.add_task(
+                "Processing batches", total=len(file_batches))
+            for batch_idx, file_batch in enumerate(file_batches, 1):
+                # Process all files in the batch concurrently
+                await self._process_batch_concurrently(file_batch)
+                progress.advance(task_id)
 
-        for batch_idx, file_batch in enumerate(file_batches, 1):
-            print(
-                f"Processing batch {batch_idx}/{len(file_batches)} ({len(file_batch)} files)...")
+    async def _process_batch_concurrently(self, file_batch: List[Dict[str, Any]]) -> None:
+        """Process all files in a batch concurrently using asyncio.gather."""
+        # Create async tasks for each file
+        tasks = []
+        for file_data in file_batch:
+            task = self._process_single_file(file_data)
+            tasks.append(task)
 
-            # Create documents for this batch
-            documents = []
-            for file_data in file_batch:
-                document = {
-                    "text": file_data["content"],
-                    "metadata": {
-                        "title": file_data["title"],
-                        "file_path": file_data["file_path"],
-                        "relative_path": file_data["relative_path"]
-                    }
-                }
-                documents.append(document)
+        # Process all files concurrently
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Process the batch through the pipeline
-            self.pipeline.run(documents)
-            print(f"Completed batch {batch_idx}/{len(file_batches)}")
+        # Log any errors that occurred
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                self.console.print(
+                    f"Error processing file {file_batch[i]['title']}: {result}")
+
+    async def _process_single_file(self, file_data: Dict[str, Any]) -> None:
+        """Process a single file through the async pipeline."""
+        try:
+            result = await self.pipeline.run_async(text=file_data["content"])
+            return result
+        except Exception as e:
+            raise Exception(f"Error processing {file_data['title']}: {e}")
 
     def get_graph_stats(self) -> Dict[str, int]:
         """Get statistics about the created knowledge graph."""

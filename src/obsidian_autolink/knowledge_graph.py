@@ -10,7 +10,7 @@ from neo4j_graphrag.experimental.pipeline.kg_builder import SimpleKGPipeline
 from neo4j import GraphDatabase
 from neo4j_graphrag.llm import OpenAILLM
 from neo4j_graphrag.embeddings import OpenAIEmbeddings
-from typing import TypedDict
+from typing import TypedDict, List, Dict, Any
 from .config import ModelSettings
 
 
@@ -68,7 +68,10 @@ class ObsidianKnowledgeGraph:
             llm=llm,
             embedder=embedder,
             from_pdf=False,  # We're processing text, not PDFs
-            schema="FREE"
+            entities=["Person", "Book", "Topic", "Meeting", "Event", "Location",
+                      "Organisation", "Article", "Paper", "Note"],
+            relations=["MENTIONS", "RELATES_TO", "WRITTEN_BY",
+                       "ABOUT", "PART_OF", "EXTRACTED_FROM", "APPEARS_IN"],
         )
 
     def read_vault_files(self) -> list[VaultFile]:
@@ -167,7 +170,15 @@ class ObsidianKnowledgeGraph:
     async def _process_single_file(self, file_data: VaultFile) -> None:
         """Process a single file through the async pipeline."""
         try:
+            # First, create a Note node for this file
+            await self._create_note_node(file_data)
+
+            # Then process the content for entities
             result = await self.pipeline.run_async(text=file_data["title"] + "\n" + file_data["content"])
+
+            # Link any extracted entities to this note
+            await self._link_entities_to_note(file_data["title"])
+
             return result
         except Exception as e:
             raise Exception(f"Error processing {file_data['title']}: {e}")
@@ -199,3 +210,99 @@ class ObsidianKnowledgeGraph:
             "nodes": node_counts,
             "relationships": rel_counts
         }
+
+    async def _create_note_node(self, file_data: VaultFile) -> None:
+        """Create a Note node for the given file."""
+        if not self.driver:
+            raise RuntimeError("Database connection not established.")
+
+        with self.driver.session() as session:
+            # Create or update the Note node
+            query = """
+            MERGE (n:Note {title: $title})
+            SET n.file_path = $file_path,
+                n.relative_path = $relative_path,
+                n.content_preview = $content_preview,
+                n.created_date = datetime()
+            RETURN n
+            """
+
+            content_preview = file_data["content"][:500] + "..." if len(
+                file_data["content"]) > 500 else file_data["content"]
+
+            session.run(query, {
+                "title": file_data["title"],
+                "file_path": file_data["file_path"],
+                "relative_path": file_data["relative_path"],
+                "content_preview": content_preview
+            })
+
+    async def _link_entities_to_note(self, note_title: str) -> None:
+        """Link all entities extracted in the current session to the note."""
+        if not self.driver:
+            raise RuntimeError("Database connection not established.")
+
+        with self.driver.session() as session:
+            # Find the note
+            note_query = "MATCH (n:Note {title: $title}) RETURN n"
+            note_result = session.run(note_query, {"title": note_title})
+            note_record = note_result.single()
+
+            if not note_record:
+                self.console.print(
+                    f"Warning: Note '{note_title}' not found for linking")
+                return
+
+            # Link all non-Note entities to this note
+            link_query = """
+            MATCH (n:Note {title: $title})
+            MATCH (e) 
+            WHERE e <> n AND NOT e:Note
+            MERGE (e)-[:EXTRACTED_FROM]->(n)
+            MERGE (n)-[:APPEARS_IN]->(e)
+            """
+
+            session.run(link_query, {"title": note_title})
+
+    def get_entities_in_note(self, note_title: str) -> List[Dict[str, Any]]:
+        """Get all entities that appear in a specific note."""
+        if not self.driver:
+            raise RuntimeError("Database connection not established.")
+
+        with self.driver.session() as session:
+            query = """
+            MATCH (n:Note {title: $title})-[:APPEARS_IN]->(e)
+            RETURN e, labels(e) as entity_types
+            """
+
+            result = session.run(query, {"title": note_title})
+            entities = []
+
+            for record in result:
+                entity = dict(record["e"])
+                entity["types"] = record["entity_types"]
+                entities.append(entity)
+
+            return entities
+
+    def get_notes_with_entity(self, entity_name: str) -> List[Dict[str, Any]]:
+        """Get all notes that contain a specific entity."""
+        if not self.driver:
+            raise RuntimeError("Database connection not established.")
+
+        with self.driver.session() as session:
+            query = """
+            MATCH (e)-[:EXTRACTED_FROM]->(n:Note)
+            WHERE e.name CONTAINS $entity_name OR e.title CONTAINS $entity_name
+            RETURN n, labels(e) as entity_types
+            """
+
+            result = session.run(query, {"entity_name": entity_name})
+            notes = []
+
+            for record in result:
+                note = dict(record["n"])
+                note["entity_types"] = record["entity_types"]
+                notes.append(note)
+
+            return notes

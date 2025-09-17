@@ -3,7 +3,6 @@
 import os
 import asyncio
 from pathlib import Path
-from typing import List, Dict, Any
 from itertools import batched
 from rich.progress import Progress
 from rich.console import Console
@@ -11,8 +10,15 @@ from neo4j_graphrag.experimental.pipeline.kg_builder import SimpleKGPipeline
 from neo4j import GraphDatabase
 from neo4j_graphrag.llm import OpenAILLM
 from neo4j_graphrag.embeddings import OpenAIEmbeddings
-
+from typing import TypedDict
 from .config import ModelSettings
+
+
+class VaultFile(TypedDict):
+    file_path: str
+    title: str
+    content: str
+    relative_path: str
 
 
 class ObsidianKnowledgeGraph:
@@ -62,15 +68,16 @@ class ObsidianKnowledgeGraph:
             llm=llm,
             embedder=embedder,
             from_pdf=False,  # We're processing text, not PDFs
+            schema="FREE"
         )
 
-    def read_vault_files(self) -> List[Dict[str, Any]]:
+    def read_vault_files(self) -> list[VaultFile]:
         """Read all markdown files from the Obsidian vault."""
         vault_path = Path(self.settings.obsidian_vault_path)
         if not vault_path.exists():
             raise FileNotFoundError(f"Vault path does not exist: {vault_path}")
 
-        markdown_files = []
+        markdown_files: list[VaultFile] = []
         for file_path in vault_path.rglob("*.md"):
             # Skip hidden files and directories
             if any(part.startswith('.') for part in file_path.parts):
@@ -126,7 +133,7 @@ class ObsidianKnowledgeGraph:
             self.console.print(f"Error creating knowledge graph: {e}")
             raise
 
-    async def _process_files_in_batches_async(self, vault_files: List[Dict[str, Any]], batch_size: int) -> None:
+    async def _process_files_in_batches_async(self, vault_files: list[VaultFile], batch_size: int) -> None:
         """Process files in batches using async pipeline with concurrent processing."""
         # Create batches of files using itertools.batched
         file_batches = list(batched(vault_files, batch_size))
@@ -135,12 +142,12 @@ class ObsidianKnowledgeGraph:
         with Progress() as progress:
             task_id = progress.add_task(
                 "Processing batches", total=len(file_batches))
-            for batch_idx, file_batch in enumerate(file_batches, 1):
+            for file_batch in file_batches:
                 # Process all files in the batch concurrently
                 await self._process_batch_concurrently(file_batch)
                 progress.advance(task_id)
 
-    async def _process_batch_concurrently(self, file_batch: List[Dict[str, Any]]) -> None:
+    async def _process_batch_concurrently(self, file_batch: list[VaultFile]) -> None:
         """Process all files in a batch concurrently using asyncio.gather."""
         # Create async tasks for each file
         tasks = []
@@ -157,15 +164,15 @@ class ObsidianKnowledgeGraph:
                 self.console.print(
                     f"Error processing file {file_batch[i]['title']}: {result}")
 
-    async def _process_single_file(self, file_data: Dict[str, Any]) -> None:
+    async def _process_single_file(self, file_data: VaultFile) -> None:
         """Process a single file through the async pipeline."""
         try:
-            result = await self.pipeline.run_async(text=file_data["content"])
+            result = await self.pipeline.run_async(text=file_data["title"] + "\n" + file_data["content"])
             return result
         except Exception as e:
             raise Exception(f"Error processing {file_data['title']}: {e}")
 
-    def get_graph_stats(self) -> Dict[str, int]:
+    def get_graph_stats(self) -> dict[str, int]:
         """Get statistics about the created knowledge graph."""
         if not self.driver:
             raise RuntimeError("Database connection not established.")
